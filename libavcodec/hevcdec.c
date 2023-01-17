@@ -35,13 +35,13 @@
 #include "libavutil/md5.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
-#include "libavutil/stereo3d.h"
 #include "libavutil/timecode.h"
 
 #include "bswapdsp.h"
 #include "bytestream.h"
 #include "cabac_functions.h"
 #include "codec_internal.h"
+#include "decode.h"
 #include "golomb.h"
 #include "hevc.h"
 #include "hevc_data.h"
@@ -339,18 +339,18 @@ static void export_stream_params(HEVCContext *s, const HEVCSPS *sps)
     avctx->profile             = sps->ptl.general_ptl.profile_idc;
     avctx->level               = sps->ptl.general_ptl.level_idc;
 
-    ff_set_sar(avctx, sps->vui.sar);
+    ff_set_sar(avctx, sps->vui.common.sar);
 
-    if (sps->vui.video_signal_type_present_flag)
-        avctx->color_range = sps->vui.video_full_range_flag ? AVCOL_RANGE_JPEG
-                                                            : AVCOL_RANGE_MPEG;
+    if (sps->vui.common.video_signal_type_present_flag)
+        avctx->color_range = sps->vui.common.video_full_range_flag ? AVCOL_RANGE_JPEG
+                                                                   : AVCOL_RANGE_MPEG;
     else
         avctx->color_range = AVCOL_RANGE_MPEG;
 
-    if (sps->vui.colour_description_present_flag) {
-        avctx->color_primaries = sps->vui.colour_primaries;
-        avctx->color_trc       = sps->vui.transfer_characteristic;
-        avctx->colorspace      = sps->vui.matrix_coeffs;
+    if (sps->vui.common.colour_description_present_flag) {
+        avctx->color_primaries = sps->vui.common.colour_primaries;
+        avctx->color_trc       = sps->vui.common.transfer_characteristics;
+        avctx->colorspace      = sps->vui.common.matrix_coeffs;
     } else {
         avctx->color_primaries = AVCOL_PRI_UNSPECIFIED;
         avctx->color_trc       = AVCOL_TRC_UNSPECIFIED;
@@ -359,9 +359,9 @@ static void export_stream_params(HEVCContext *s, const HEVCSPS *sps)
 
     avctx->chroma_sample_location = AVCHROMA_LOC_UNSPECIFIED;
     if (sps->chroma_format_idc == 1) {
-        if (sps->vui.chroma_loc_info_present_flag) {
-            if (sps->vui.chroma_sample_loc_type_top_field <= 5)
-                avctx->chroma_sample_location = sps->vui.chroma_sample_loc_type_top_field + 1;
+        if (sps->vui.common.chroma_loc_info_present_flag) {
+            if (sps->vui.common.chroma_sample_loc_type_top_field <= 5)
+                avctx->chroma_sample_location = sps->vui.common.chroma_sample_loc_type_top_field + 1;
         } else
             avctx->chroma_sample_location = AVCHROMA_LOC_LEFT;
     }
@@ -383,16 +383,16 @@ static int export_stream_params_from_sei(HEVCContext *s)
 {
     AVCodecContext *avctx = s->avctx;
 
-    if (s->sei.a53_caption.buf_ref)
+    if (s->sei.common.a53_caption.buf_ref)
         s->avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
 
-    if (s->sei.alternative_transfer.present &&
-        av_color_transfer_name(s->sei.alternative_transfer.preferred_transfer_characteristics) &&
-        s->sei.alternative_transfer.preferred_transfer_characteristics != AVCOL_TRC_UNSPECIFIED) {
-        avctx->color_trc = s->sei.alternative_transfer.preferred_transfer_characteristics;
+    if (s->sei.common.alternative_transfer.present &&
+        av_color_transfer_name(s->sei.common.alternative_transfer.preferred_transfer_characteristics) &&
+        s->sei.common.alternative_transfer.preferred_transfer_characteristics != AVCOL_TRC_UNSPECIFIED) {
+        avctx->color_trc = s->sei.common.alternative_transfer.preferred_transfer_characteristics;
     }
 
-    if (s->sei.film_grain_characteristics.present)
+    if (s->sei.common.film_grain_characteristics.present)
         avctx->properties |= FF_CODEC_PROPERTY_FILM_GRAIN;
 
     return 0;
@@ -453,6 +453,9 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
 #endif
         break;
     case AV_PIX_FMT_YUV444P:
+#if CONFIG_HEVC_VAAPI_HWACCEL
+        *fmt++ = AV_PIX_FMT_VAAPI;
+#endif
 #if CONFIG_HEVC_VDPAU_HWACCEL
         *fmt++ = AV_PIX_FMT_VDPAU;
 #endif
@@ -478,11 +481,19 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
 #endif
     case AV_PIX_FMT_YUV420P12:
     case AV_PIX_FMT_YUV444P12:
+#if CONFIG_HEVC_VAAPI_HWACCEL
+       *fmt++ = AV_PIX_FMT_VAAPI;
+#endif
 #if CONFIG_HEVC_VDPAU_HWACCEL
         *fmt++ = AV_PIX_FMT_VDPAU;
 #endif
 #if CONFIG_HEVC_NVDEC_HWACCEL
         *fmt++ = AV_PIX_FMT_CUDA;
+#endif
+        break;
+    case AV_PIX_FMT_YUV422P12:
+#if CONFIG_HEVC_VAAPI_HWACCEL
+       *fmt++ = AV_PIX_FMT_VAAPI;
 #endif
         break;
     }
@@ -570,7 +581,7 @@ static int hls_slice_header(HEVCContext *s)
     }
 
     if ((IS_IDR(s) || IS_BLA(s)) && sh->first_slice_in_pic_flag) {
-        s->seq_decode = (s->seq_decode + 1) & 0xff;
+        s->seq_decode = (s->seq_decode + 1) & HEVC_SEQUENCE_COUNTER_MASK;
         s->max_ra     = INT_MAX;
         if (IS_IDR(s))
             ff_hevc_clear_refs(s);
@@ -595,15 +606,8 @@ static int hls_slice_header(HEVCContext *s)
 
     if (s->ps.sps != (HEVCSPS*)s->ps.sps_list[s->ps.pps->sps_id]->data) {
         const HEVCSPS *sps = (HEVCSPS*)s->ps.sps_list[s->ps.pps->sps_id]->data;
-        const HEVCSPS *last_sps = s->ps.sps;
         enum AVPixelFormat pix_fmt;
 
-        if (last_sps && IS_IRAP(s) && s->nal_unit_type != HEVC_NAL_CRA_NUT) {
-            if (sps->width != last_sps->width || sps->height != last_sps->height ||
-                sps->temporal_layer[sps->max_sub_layers - 1].max_dec_pic_buffering !=
-                last_sps->temporal_layer[last_sps->max_sub_layers - 1].max_dec_pic_buffering)
-                sh->no_output_of_prior_pics_flag = 0;
-        }
         ff_hevc_clear_refs(s);
 
         ret = set_sps(s, sps, sps->pix_fmt);
@@ -615,7 +619,7 @@ static int hls_slice_header(HEVCContext *s)
             return pix_fmt;
         s->avctx->pix_fmt = pix_fmt;
 
-        s->seq_decode = (s->seq_decode + 1) & 0xff;
+        s->seq_decode = (s->seq_decode + 1) & HEVC_SEQUENCE_COUNTER_MASK;
         s->max_ra     = INT_MAX;
     }
 
@@ -1205,7 +1209,7 @@ static int hls_transform_unit(HEVCLocalContext *lc, int x0, int y0,
                         ptrdiff_t stride = s->frame->linesize[1];
                         int hshift = s->ps.sps->hshift[1];
                         int vshift = s->ps.sps->vshift[1];
-                        int16_t *coeffs_y = (int16_t*)lc->edge_emu_buffer;
+                        const int16_t *coeffs_y = (int16_t*)lc->edge_emu_buffer;
                         int16_t *coeffs   = (int16_t*)lc->edge_emu_buffer2;
                         int size = 1 << log2_trafo_size_c;
 
@@ -1235,7 +1239,7 @@ static int hls_transform_unit(HEVCLocalContext *lc, int x0, int y0,
                         ptrdiff_t stride = s->frame->linesize[2];
                         int hshift = s->ps.sps->hshift[2];
                         int vshift = s->ps.sps->vshift[2];
-                        int16_t *coeffs_y = (int16_t*)lc->edge_emu_buffer;
+                        const int16_t *coeffs_y = (int16_t*)lc->edge_emu_buffer;
                         int16_t *coeffs   = (int16_t*)lc->edge_emu_buffer2;
                         int size = 1 << log2_trafo_size_c;
 
@@ -1499,11 +1503,11 @@ static int hls_pcm_sample(HEVCLocalContext *lc, int x0, int y0, int log2_cb_size
  */
 
 static void luma_mc_uni(HEVCLocalContext *lc, uint8_t *dst, ptrdiff_t dststride,
-                        AVFrame *ref, const Mv *mv, int x_off, int y_off,
+                        const AVFrame *ref, const Mv *mv, int x_off, int y_off,
                         int block_w, int block_h, int luma_weight, int luma_offset)
 {
     const HEVCContext *const s = lc->parent;
-    uint8_t *src         = ref->data[0];
+    const uint8_t *src   = ref->data[0];
     ptrdiff_t srcstride  = ref->linesize[0];
     int pic_width        = s->ps.sps->width;
     int pic_height       = s->ps.sps->height;
@@ -1560,8 +1564,9 @@ static void luma_mc_uni(HEVCLocalContext *lc, uint8_t *dst, ptrdiff_t dststride,
  * @param current_mv current motion vector structure
  */
  static void luma_mc_bi(HEVCLocalContext *lc, uint8_t *dst, ptrdiff_t dststride,
-                       AVFrame *ref0, const Mv *mv0, int x_off, int y_off,
-                       int block_w, int block_h, AVFrame *ref1, const Mv *mv1, struct MvField *current_mv)
+                        const AVFrame *ref0, const Mv *mv0, int x_off, int y_off,
+                        int block_w, int block_h, const AVFrame *ref1,
+                        const Mv *mv1, struct MvField *current_mv)
 {
     const HEVCContext *const s = lc->parent;
     ptrdiff_t src0stride  = ref0->linesize[0];
@@ -1580,8 +1585,8 @@ static void luma_mc_uni(HEVCLocalContext *lc, uint8_t *dst, ptrdiff_t dststride,
     int y_off1           = y_off + (mv1->y >> 2);
     int idx              = hevc_pel_weight[block_w];
 
-    uint8_t *src0  = ref0->data[0] + y_off0 * src0stride + (int)((unsigned)x_off0 << s->ps.sps->pixel_shift);
-    uint8_t *src1  = ref1->data[0] + y_off1 * src1stride + (int)((unsigned)x_off1 << s->ps.sps->pixel_shift);
+    const uint8_t *src0  = ref0->data[0] + y_off0 * src0stride + (int)((unsigned)x_off0 << s->ps.sps->pixel_shift);
+    const uint8_t *src1  = ref1->data[0] + y_off1 * src1stride + (int)((unsigned)x_off1 << s->ps.sps->pixel_shift);
 
     if (x_off0 < QPEL_EXTRA_BEFORE || y_off0 < QPEL_EXTRA_AFTER ||
         x_off0 >= pic_width - block_w - QPEL_EXTRA_AFTER ||
@@ -1651,7 +1656,7 @@ static void luma_mc_uni(HEVCLocalContext *lc, uint8_t *dst, ptrdiff_t dststride,
  */
 
 static void chroma_mc_uni(HEVCLocalContext *lc, uint8_t *dst0,
-                          ptrdiff_t dststride, uint8_t *src0, ptrdiff_t srcstride, int reflist,
+                          ptrdiff_t dststride, const uint8_t *src0, ptrdiff_t srcstride, int reflist,
                           int x_off, int y_off, int block_w, int block_h,
                           const struct MvField *current_mv, int chroma_weight, int chroma_offset)
 {
@@ -1716,12 +1721,13 @@ static void chroma_mc_uni(HEVCLocalContext *lc, uint8_t *dst0,
  * @param current_mv current motion vector structure
  * @param cidx chroma component(cb, cr)
  */
-static void chroma_mc_bi(HEVCLocalContext *lc, uint8_t *dst0, ptrdiff_t dststride, AVFrame *ref0, AVFrame *ref1,
+static void chroma_mc_bi(HEVCLocalContext *lc, uint8_t *dst0, ptrdiff_t dststride,
+                         const AVFrame *ref0, const AVFrame *ref1,
                          int x_off, int y_off, int block_w, int block_h, const MvField *current_mv, int cidx)
 {
     const HEVCContext *const s = lc->parent;
-    uint8_t *src1        = ref0->data[cidx+1];
-    uint8_t *src2        = ref1->data[cidx+1];
+    const uint8_t *src1  = ref0->data[cidx+1];
+    const uint8_t *src2  = ref1->data[cidx+1];
     ptrdiff_t src1stride = ref0->linesize[cidx+1];
     ptrdiff_t src2stride = ref1->linesize[cidx+1];
     int weight_flag      = (s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
@@ -1806,7 +1812,7 @@ static void chroma_mc_bi(HEVCLocalContext *lc, uint8_t *dst0, ptrdiff_t dststrid
                                                          _mx1, _my1, block_w);
 }
 
-static void hevc_await_progress(const HEVCContext *s, HEVCFrame *ref,
+static void hevc_await_progress(const HEVCContext *s, const HEVCFrame *ref,
                                 const Mv *mv, int y0, int height)
 {
     if (s->threads_type == FF_THREAD_FRAME ) {
@@ -1876,7 +1882,7 @@ static void hls_prediction_unit(HEVCLocalContext *lc, int x0, int y0,
 
     MvField *tab_mvf = s->ref->tab_mvf;
     const RefPicList *refPicList = s->ref->refPicList;
-    HEVCFrame *ref0 = NULL, *ref1 = NULL;
+    const HEVCFrame *ref0 = NULL, *ref1 = NULL;
     uint8_t *dst0 = POS(0, x0, y0);
     uint8_t *dst1 = POS(1, x0, y0);
     uint8_t *dst2 = POS(2, x0, y0);
@@ -2719,67 +2725,6 @@ static int set_side_data(HEVCContext *s)
     AVFrame *out = s->ref->frame;
     int ret;
 
-    if (s->sei.frame_packing.present &&
-        s->sei.frame_packing.arrangement_type >= 3 &&
-        s->sei.frame_packing.arrangement_type <= 5 &&
-        s->sei.frame_packing.content_interpretation_type > 0 &&
-        s->sei.frame_packing.content_interpretation_type < 3) {
-        AVStereo3D *stereo = av_stereo3d_create_side_data(out);
-        if (!stereo)
-            return AVERROR(ENOMEM);
-
-        switch (s->sei.frame_packing.arrangement_type) {
-        case 3:
-            if (s->sei.frame_packing.quincunx_subsampling)
-                stereo->type = AV_STEREO3D_SIDEBYSIDE_QUINCUNX;
-            else
-                stereo->type = AV_STEREO3D_SIDEBYSIDE;
-            break;
-        case 4:
-            stereo->type = AV_STEREO3D_TOPBOTTOM;
-            break;
-        case 5:
-            stereo->type = AV_STEREO3D_FRAMESEQUENCE;
-            break;
-        }
-
-        if (s->sei.frame_packing.content_interpretation_type == 2)
-            stereo->flags = AV_STEREO3D_FLAG_INVERT;
-
-        if (s->sei.frame_packing.arrangement_type == 5) {
-            if (s->sei.frame_packing.current_frame_is_frame0_flag)
-                stereo->view = AV_STEREO3D_VIEW_LEFT;
-            else
-                stereo->view = AV_STEREO3D_VIEW_RIGHT;
-        }
-    }
-
-    if (s->sei.display_orientation.present &&
-        (s->sei.display_orientation.anticlockwise_rotation ||
-         s->sei.display_orientation.hflip || s->sei.display_orientation.vflip)) {
-        double angle = s->sei.display_orientation.anticlockwise_rotation * 360 / (double) (1 << 16);
-        AVFrameSideData *rotation = av_frame_new_side_data(out,
-                                                           AV_FRAME_DATA_DISPLAYMATRIX,
-                                                           sizeof(int32_t) * 9);
-        if (!rotation)
-            return AVERROR(ENOMEM);
-
-        /* av_display_rotation_set() expects the angle in the clockwise
-         * direction, hence the first minus.
-         * The below code applies the flips after the rotation, yet
-         * the H.2645 specs require flipping to be applied first.
-         * Because of R O(phi) = O(-phi) R (where R is flipping around
-         * an arbitatry axis and O(phi) is the proper rotation by phi)
-         * we can create display matrices as desired by negating
-         * the degree once for every flip applied. */
-        angle = -angle * (1 - 2 * !!s->sei.display_orientation.hflip)
-                       * (1 - 2 * !!s->sei.display_orientation.vflip);
-        av_display_rotation_set((int32_t *)rotation->data, angle);
-        av_display_matrix_flip((int32_t *)rotation->data,
-                               s->sei.display_orientation.hflip,
-                               s->sei.display_orientation.vflip);
-    }
-
     // Decrement the mastering display flag when IRAP frame has no_rasl_output_flag=1
     // so the side data persists for the entire coded video sequence.
     if (s->sei.mastering_display.present > 0 &&
@@ -2849,28 +2794,12 @@ static int set_side_data(HEVCContext *s)
                metadata->MaxCLL, metadata->MaxFALL);
     }
 
-    if (s->sei.a53_caption.buf_ref) {
-        HEVCSEIA53Caption *a53 = &s->sei.a53_caption;
-
-        AVFrameSideData *sd = av_frame_new_side_data_from_buf(out, AV_FRAME_DATA_A53_CC, a53->buf_ref);
-        if (!sd)
-            av_buffer_unref(&a53->buf_ref);
-        a53->buf_ref = NULL;
-    }
-
-    for (int i = 0; i < s->sei.unregistered.nb_buf_ref; i++) {
-        HEVCSEIUnregistered *unreg = &s->sei.unregistered;
-
-        if (unreg->buf_ref[i]) {
-            AVFrameSideData *sd = av_frame_new_side_data_from_buf(out,
-                    AV_FRAME_DATA_SEI_UNREGISTERED,
-                    unreg->buf_ref[i]);
-            if (!sd)
-                av_buffer_unref(&unreg->buf_ref[i]);
-            unreg->buf_ref[i] = NULL;
-        }
-    }
-    s->sei.unregistered.nb_buf_ref = 0;
+    ret = ff_h2645_sei_to_frame(out, &s->sei.common, AV_CODEC_ID_HEVC, NULL,
+                                &s->ps.sps->vui.common,
+                                s->ps.sps->bit_depth, s->ps.sps->bit_depth_chroma,
+                                s->ref->poc /* no poc_offset in HEVC */);
+    if (ret < 0)
+        return ret;
 
     if (s->sei.timecode.present) {
         uint32_t *tc_sd;
@@ -2898,63 +2827,8 @@ static int set_side_data(HEVCContext *s)
         s->sei.timecode.num_clock_ts = 0;
     }
 
-    if (s->sei.film_grain_characteristics.present) {
-        HEVCSEIFilmGrainCharacteristics *fgc = &s->sei.film_grain_characteristics;
-        AVFilmGrainParams *fgp = av_film_grain_params_create_side_data(out);
-        if (!fgp)
-            return AVERROR(ENOMEM);
-
-        fgp->type = AV_FILM_GRAIN_PARAMS_H274;
-        fgp->seed = s->ref->poc; /* no poc_offset in HEVC */
-
-        fgp->codec.h274.model_id = fgc->model_id;
-        if (fgc->separate_colour_description_present_flag) {
-            fgp->codec.h274.bit_depth_luma = fgc->bit_depth_luma;
-            fgp->codec.h274.bit_depth_chroma = fgc->bit_depth_chroma;
-            fgp->codec.h274.color_range = fgc->full_range + 1;
-            fgp->codec.h274.color_primaries = fgc->color_primaries;
-            fgp->codec.h274.color_trc = fgc->transfer_characteristics;
-            fgp->codec.h274.color_space = fgc->matrix_coeffs;
-        } else {
-            const HEVCSPS *sps = s->ps.sps;
-            const VUI *vui = &sps->vui;
-            fgp->codec.h274.bit_depth_luma = sps->bit_depth;
-            fgp->codec.h274.bit_depth_chroma = sps->bit_depth_chroma;
-            if (vui->video_signal_type_present_flag)
-                fgp->codec.h274.color_range = vui->video_full_range_flag + 1;
-            else
-                fgp->codec.h274.color_range = AVCOL_RANGE_UNSPECIFIED;
-            if (vui->colour_description_present_flag) {
-                fgp->codec.h274.color_primaries = vui->colour_primaries;
-                fgp->codec.h274.color_trc = vui->transfer_characteristic;
-                fgp->codec.h274.color_space = vui->matrix_coeffs;
-            } else {
-                fgp->codec.h274.color_primaries = AVCOL_PRI_UNSPECIFIED;
-                fgp->codec.h274.color_trc = AVCOL_TRC_UNSPECIFIED;
-                fgp->codec.h274.color_space = AVCOL_SPC_UNSPECIFIED;
-            }
-        }
-        fgp->codec.h274.blending_mode_id = fgc->blending_mode_id;
-        fgp->codec.h274.log2_scale_factor = fgc->log2_scale_factor;
-
-        memcpy(&fgp->codec.h274.component_model_present, &fgc->comp_model_present_flag,
-               sizeof(fgp->codec.h274.component_model_present));
-        memcpy(&fgp->codec.h274.num_intensity_intervals, &fgc->num_intensity_intervals,
-               sizeof(fgp->codec.h274.num_intensity_intervals));
-        memcpy(&fgp->codec.h274.num_model_values, &fgc->num_model_values,
-               sizeof(fgp->codec.h274.num_model_values));
-        memcpy(&fgp->codec.h274.intensity_interval_lower_bound, &fgc->intensity_interval_lower_bound,
-               sizeof(fgp->codec.h274.intensity_interval_lower_bound));
-        memcpy(&fgp->codec.h274.intensity_interval_upper_bound, &fgc->intensity_interval_upper_bound,
-               sizeof(fgp->codec.h274.intensity_interval_upper_bound));
-        memcpy(&fgp->codec.h274.comp_model_value, &fgc->comp_model_value,
-               sizeof(fgp->codec.h274.comp_model_value));
-
-        fgc->present = fgc->persistence_flag;
-    }
-
-    if (s->sei.dynamic_hdr_plus.info) {
-        AVBufferRef *info_ref = av_buffer_ref(s->sei.dynamic_hdr_plus.info);
+    if (s->sei.common.dynamic_hdr_plus.info) {
+        AVBufferRef *info_ref = av_buffer_ref(s->sei.common.dynamic_hdr_plus.info);
         if (!info_ref)
             return AVERROR(ENOMEM);
 
@@ -2975,8 +2849,8 @@ static int set_side_data(HEVCContext *s)
     if ((ret = ff_dovi_attach_side_data(&s->dovi_ctx, out)) < 0)
         return ret;
 
-    if (s->sei.dynamic_hdr_vivid.info) {
-        AVBufferRef *info_ref = av_buffer_ref(s->sei.dynamic_hdr_vivid.info);
+    if (s->sei.common.dynamic_hdr_vivid.info) {
+        AVBufferRef *info_ref = av_buffer_ref(s->sei.common.dynamic_hdr_vivid.info);
         if (!info_ref)
             return AVERROR(ENOMEM);
 
@@ -3022,7 +2896,7 @@ static int hevc_frame_start(HEVCContext *s)
 
     s->ref->frame->key_frame = IS_IRAP(s);
 
-    s->ref->needs_fg = s->sei.film_grain_characteristics.present &&
+    s->ref->needs_fg = s->sei.common.film_grain_characteristics.present &&
         !(s->avctx->export_side_data & AV_CODEC_EXPORT_DATA_FILM_GRAIN) &&
         !s->avctx->hwaccel;
 
@@ -3254,7 +3128,7 @@ static int decode_nal_unit(HEVCContext *s, const H2645NAL *nal)
         break;
     case HEVC_NAL_EOS_NUT:
     case HEVC_NAL_EOB_NUT:
-        s->seq_decode = (s->seq_decode + 1) & 0xff;
+        s->seq_decode = (s->seq_decode + 1) & HEVC_SEQUENCE_COUNTER_MASK;
         s->max_ra     = INT_MAX;
         break;
     case HEVC_NAL_AUD:
@@ -3500,7 +3374,7 @@ static int hevc_decode_frame(AVCodecContext *avctx, AVFrame *rframe,
         }
     } else {
         /* verify the SEI checksum */
-        if (avctx->err_recognition & AV_EF_CRCCHECK && s->is_decoded &&
+        if (avctx->err_recognition & AV_EF_CRCCHECK && s->ref && s->is_decoded &&
             s->sei.picture_hash.is_md5) {
             ret = verify_md5(s, s->ref->frame);
             if (ret < 0 && avctx->err_recognition & AV_EF_EXPLODE) {
@@ -3718,34 +3592,16 @@ static int hevc_update_thread_context(AVCodecContext *dst,
     s->threads_type        = s0->threads_type;
 
     if (s0->eos) {
-        s->seq_decode = (s->seq_decode + 1) & 0xff;
+        s->seq_decode = (s->seq_decode + 1) & HEVC_SEQUENCE_COUNTER_MASK;
         s->max_ra = INT_MAX;
     }
 
-    ret = av_buffer_replace(&s->sei.a53_caption.buf_ref, s0->sei.a53_caption.buf_ref);
+    ret = ff_h2645_sei_ctx_replace(&s->sei.common, &s0->sei.common);
     if (ret < 0)
         return ret;
 
-    for (i = 0; i < s->sei.unregistered.nb_buf_ref; i++)
-        av_buffer_unref(&s->sei.unregistered.buf_ref[i]);
-    s->sei.unregistered.nb_buf_ref = 0;
-
-    if (s0->sei.unregistered.nb_buf_ref) {
-        ret = av_reallocp_array(&s->sei.unregistered.buf_ref,
-                                s0->sei.unregistered.nb_buf_ref,
-                                sizeof(*s->sei.unregistered.buf_ref));
-        if (ret < 0)
-            return ret;
-
-        for (i = 0; i < s0->sei.unregistered.nb_buf_ref; i++) {
-            s->sei.unregistered.buf_ref[i] = av_buffer_ref(s0->sei.unregistered.buf_ref[i]);
-            if (!s->sei.unregistered.buf_ref[i])
-                return AVERROR(ENOMEM);
-            s->sei.unregistered.nb_buf_ref++;
-        }
-    }
-
-    ret = av_buffer_replace(&s->sei.dynamic_hdr_plus.info, s0->sei.dynamic_hdr_plus.info);
+    ret = av_buffer_replace(&s->sei.common.dynamic_hdr_plus.info,
+                            s0->sei.common.dynamic_hdr_plus.info);
     if (ret < 0)
         return ret;
 
@@ -3757,15 +3613,16 @@ static int hevc_update_thread_context(AVCodecContext *dst,
     if (ret < 0)
         return ret;
 
-    ret = av_buffer_replace(&s->sei.dynamic_hdr_vivid.info, s0->sei.dynamic_hdr_vivid.info);
+    ret = av_buffer_replace(&s->sei.common.dynamic_hdr_vivid.info,
+                            s0->sei.common.dynamic_hdr_vivid.info);
     if (ret < 0)
         return ret;
 
-    s->sei.frame_packing        = s0->sei.frame_packing;
-    s->sei.display_orientation  = s0->sei.display_orientation;
+    s->sei.common.frame_packing        = s0->sei.common.frame_packing;
+    s->sei.common.display_orientation  = s0->sei.common.display_orientation;
+    s->sei.common.alternative_transfer = s0->sei.common.alternative_transfer;
     s->sei.mastering_display    = s0->sei.mastering_display;
     s->sei.content_light        = s0->sei.content_light;
-    s->sei.alternative_transfer = s0->sei.alternative_transfer;
 
     ret = export_stream_params_from_sei(s);
     if (ret < 0)
@@ -3846,7 +3703,7 @@ static const AVClass hevc_decoder_class = {
 
 const FFCodec ff_hevc_decoder = {
     .p.name                = "hevc",
-    .p.long_name           = NULL_IF_CONFIG_SMALL("HEVC (High Efficiency Video Coding)"),
+    CODEC_LONG_NAME("HEVC (High Efficiency Video Coding)"),
     .p.type                = AVMEDIA_TYPE_VIDEO,
     .p.id                  = AV_CODEC_ID_HEVC,
     .priv_data_size        = sizeof(HEVCContext),
@@ -3855,7 +3712,7 @@ const FFCodec ff_hevc_decoder = {
     .close                 = hevc_decode_free,
     FF_CODEC_DECODE_CB(hevc_decode_frame),
     .flush                 = hevc_decode_flush,
-    .update_thread_context = ONLY_IF_THREADS_ENABLED(hevc_update_thread_context),
+    UPDATE_THREAD_CONTEXT(hevc_update_thread_context),
     .p.capabilities        = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY |
                              AV_CODEC_CAP_SLICE_THREADS | AV_CODEC_CAP_FRAME_THREADS,
     .caps_internal         = FF_CODEC_CAP_EXPORTS_CROPPING |
