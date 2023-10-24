@@ -44,7 +44,7 @@ static const char* format_to_name(void* ptr)
     AVFormatContext* fc = (AVFormatContext*) ptr;
     if(fc->iformat) return fc->iformat->name;
     else if(fc->oformat) return fc->oformat->name;
-    else return "NULL";
+    else return fc->av_class->class_name;
 }
 
 static void *format_child_next(void *obj, void *prev)
@@ -190,7 +190,9 @@ FF_ENABLE_DEPRECATION_WARNINGS
         return NULL;
     }
 
+#if FF_API_LAVF_SHORTEST
     si->shortest_end = AV_NOPTS_VALUE;
+#endif
 
     return s;
 }
@@ -309,7 +311,9 @@ AVStream *avformat_new_stream(AVFormatContext *s, const AVCodec *c)
 
     st->sample_aspect_ratio = (AVRational) { 0, 1 };
 
+#if FF_API_AVSTREAM_SIDE_DATA
     sti->inject_global_side_data = si->inject_global_side_data;
+#endif
 
     sti->need_context_update = 1;
 
