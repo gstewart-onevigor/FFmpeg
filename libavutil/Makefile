@@ -4,6 +4,7 @@ DESC = FFmpeg utility library
 HEADERS = adler32.h                                                     \
           aes.h                                                         \
           aes_ctr.h                                                     \
+          ambient_viewing_environment.h                                 \
           attributes.h                                                  \
           audio_fifo.h                                                  \
           avassert.h                                                    \
@@ -30,8 +31,10 @@ HEADERS = adler32.h                                                     \
           encryption_info.h                                             \
           error.h                                                       \
           eval.h                                                        \
+          executor.h                                                    \
           fifo.h                                                        \
           file.h                                                        \
+          film_grain_params.h                                           \
           frame.h                                                       \
           hash.h                                                        \
           hdr_dynamic_metadata.h                                        \
@@ -40,6 +43,7 @@ HEADERS = adler32.h                                                     \
           hwcontext.h                                                   \
           hwcontext_cuda.h                                              \
           hwcontext_d3d11va.h                                           \
+          hwcontext_d3d12va.h                                           \
           hwcontext_drm.h                                               \
           hwcontext_dxva2.h                                             \
           hwcontext_qsv.h                                               \
@@ -49,6 +53,7 @@ HEADERS = adler32.h                                                     \
           hwcontext_videotoolbox.h                                      \
           hwcontext_vdpau.h                                             \
           hwcontext_vulkan.h                                            \
+          iamf.h                                                        \
           imgutils.h                                                    \
           intfloat.h                                                    \
           intreadwrite.h                                                \
@@ -89,7 +94,7 @@ HEADERS = adler32.h                                                     \
           xtea.h                                                        \
           tea.h                                                         \
           tx.h                                                          \
-          film_grain_params.h                                           \
+          video_hint.h
 
 ARCH_HEADERS = bswap.h                                                  \
                intmath.h                                                \
@@ -102,6 +107,7 @@ BUILT_HEADERS = avconfig.h                                              \
 OBJS = adler32.o                                                        \
        aes.o                                                            \
        aes_ctr.o                                                        \
+       ambient_viewing_environment.o                                    \
        audio_fifo.o                                                     \
        avstring.o                                                       \
        avsscanf.o                                                       \
@@ -112,7 +118,6 @@ OBJS = adler32.o                                                        \
        cast5.o                                                          \
        camellia.o                                                       \
        channel_layout.o                                                 \
-       color_utils.o                                                    \
        cpu.o                                                            \
        crc.o                                                            \
        csp.o                                                            \
@@ -125,10 +130,12 @@ OBJS = adler32.o                                                        \
        encryption_info.o                                                \
        error.o                                                          \
        eval.o                                                           \
+       executor.o                                                       \
        fifo.o                                                           \
        file.o                                                           \
        file_open.o                                                      \
        float_dsp.o                                                      \
+       film_grain_params.o                                              \
        fixed_dsp.o                                                      \
        frame.o                                                          \
        hash.o                                                           \
@@ -136,6 +143,7 @@ OBJS = adler32.o                                                        \
        hdr_dynamic_vivid_metadata.o                                     \
        hmac.o                                                           \
        hwcontext.o                                                      \
+       iamf.o                                                           \
        imgutils.o                                                       \
        integer.o                                                        \
        intmath.o                                                        \
@@ -167,6 +175,7 @@ OBJS = adler32.o                                                        \
        threadmessage.o                                                  \
        time.o                                                           \
        timecode.o                                                       \
+       timestamp.o                                                      \
        tree.o                                                           \
        twofish.o                                                        \
        utils.o                                                          \
@@ -180,11 +189,12 @@ OBJS = adler32.o                                                        \
        uuid.o                                                           \
        version.o                                                        \
        video_enc_params.o                                               \
-       film_grain_params.o                                              \
+       video_hint.o                                                     \
 
 
 OBJS-$(CONFIG_CUDA)                     += hwcontext_cuda.o
 OBJS-$(CONFIG_D3D11VA)                  += hwcontext_d3d11va.o
+OBJS-$(CONFIG_D3D12VA)                  += hwcontext_d3d12va.o
 OBJS-$(CONFIG_DXVA2)                    += hwcontext_dxva2.o
 OBJS-$(CONFIG_LIBDRM)                   += hwcontext_drm.o
 OBJS-$(CONFIG_MACOS_KPERF)              += macos_kperf.o
@@ -194,20 +204,21 @@ OBJS-$(CONFIG_QSV)                      += hwcontext_qsv.o
 OBJS-$(CONFIG_VAAPI)                    += hwcontext_vaapi.o
 OBJS-$(CONFIG_VIDEOTOOLBOX)             += hwcontext_videotoolbox.o
 OBJS-$(CONFIG_VDPAU)                    += hwcontext_vdpau.o
-OBJS-$(CONFIG_VULKAN)                   += hwcontext_vulkan.o
+OBJS-$(CONFIG_VULKAN)                   += hwcontext_vulkan.o vulkan.o
 
 OBJS-$(!CONFIG_VULKAN)                  += hwcontext_stub.o
 
 OBJS += $(COMPAT_OBJS:%=../compat/%)
 
 # Windows resource file
-SLIBOBJS-$(HAVE_GNU_WINDRES)            += avutilres.o
+SHLIBOBJS-$(HAVE_GNU_WINDRES)           += avutilres.o
 
 SKIPHEADERS                            += objc.h
 SKIPHEADERS-$(HAVE_CUDA_H)             += hwcontext_cuda.h
 SKIPHEADERS-$(CONFIG_CUDA)             += hwcontext_cuda_internal.h     \
                                           cuda_check.h
 SKIPHEADERS-$(CONFIG_D3D11VA)          += hwcontext_d3d11va.h
+SKIPHEADERS-$(CONFIG_D3D12VA)          += hwcontext_d3d12va.h
 SKIPHEADERS-$(CONFIG_DXVA2)            += hwcontext_dxva2.h
 SKIPHEADERS-$(CONFIG_QSV)              += hwcontext_qsv.h
 SKIPHEADERS-$(CONFIG_OPENCL)           += hwcontext_opencl.h
@@ -217,6 +228,8 @@ SKIPHEADERS-$(CONFIG_VDPAU)            += hwcontext_vdpau.h
 SKIPHEADERS-$(CONFIG_VULKAN)           += hwcontext_vulkan.h vulkan.h   \
                                           vulkan_functions.h            \
                                           vulkan_loader.h
+SKIPHEADERS-$(CONFIG_LIBSHADERC)       += vulkan_spirv.h
+SKIPHEADERS-$(CONFIG_LIBGLSLANG)       += vulkan_spirv.h
 
 TESTPROGS = adler32                                                     \
             aes                                                         \
@@ -261,6 +274,7 @@ TESTPROGS = adler32                                                     \
             ripemd                                                      \
             sha                                                         \
             sha512                                                      \
+            side_data_array                                             \
             softfloat                                                   \
             tree                                                        \
             twofish                                                     \
