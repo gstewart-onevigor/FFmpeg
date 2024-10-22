@@ -360,7 +360,18 @@ int ff_vk_mt_is_np_rgb(enum AVPixelFormat pix_fmt);
 /**
  * Returns the format to use for images in shaders.
  */
-const char *ff_vk_shader_rep_fmt(enum AVPixelFormat pixfmt);
+enum FFVkShaderRepFormat {
+    /* Native format with no conversion. May require casting. */
+    FF_VK_REP_NATIVE = 0,
+    /* Float conversion of the native format. */
+    FF_VK_REP_FLOAT,
+    /* Signed integer version of the native format */
+    FF_VK_REP_INT,
+    /* Unsigned integer version of the native format */
+    FF_VK_REP_UINT,
+};
+const char *ff_vk_shader_rep_fmt(enum AVPixelFormat pix_fmt,
+                                 enum FFVkShaderRepFormat rep_fmt);
 
 /**
  * Loads props/mprops/driver_props
@@ -436,7 +447,7 @@ void ff_vk_exec_discard_deps(FFVulkanContext *s, FFVkExecContext *e);
  */
 int ff_vk_create_imageviews(FFVulkanContext *s, FFVkExecContext *e,
                             VkImageView views[AV_NUM_DATA_POINTERS],
-                            AVFrame *f);
+                            AVFrame *f, enum FFVkShaderRepFormat rep_fmt);
 
 void ff_vk_frame_barrier(FFVulkanContext *s, FFVkExecContext *e,
                          AVFrame *pic, VkImageMemoryBarrier2 *bar, int *nb_bar,

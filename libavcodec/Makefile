@@ -70,6 +70,7 @@ include $(SRC_PATH)/libavcodec/aac/Makefile
 include $(SRC_PATH)/libavcodec/hevc/Makefile
 include $(SRC_PATH)/libavcodec/opus/Makefile
 include $(SRC_PATH)/libavcodec/vvc/Makefile
+include $(SRC_PATH)/libavcodec/vulkan/Makefile
 -include $(SRC_PATH)/libavcodec/$(ARCH)/vvc/Makefile
 OBJS-$(CONFIG_AANDCTTABLES)            += aandcttab.o
 OBJS-$(CONFIG_AC3DSP)                  += ac3dsp.o ac3.o ac3tab.o
@@ -1194,6 +1195,7 @@ OBJS-$(CONFIG_DCA_PARSER)              += dca_parser.o dca_exss.o dca.o \
                                           dca_sample_rate_tab.o
 OBJS-$(CONFIG_DIRAC_PARSER)            += dirac_parser.o
 OBJS-$(CONFIG_DNXHD_PARSER)            += dnxhd_parser.o dnxhddata.o
+OBJS-$(CONFIG_DNXUC_PARSER)            += dnxuc_parser.o
 OBJS-$(CONFIG_DOLBY_E_PARSER)          += dolby_e_parser.o dolby_e_parse.o
 OBJS-$(CONFIG_DPX_PARSER)              += dpx_parser.o
 OBJS-$(CONFIG_DVAUDIO_PARSER)          += dvaudio_parser.o
@@ -1375,12 +1377,3 @@ $(SUBDIR)pcm.o: $(SUBDIR)pcm_tables.h
 $(SUBDIR)qdm2.o: $(SUBDIR)qdm2_tables.h
 $(SUBDIR)sinewin.o: $(SUBDIR)sinewin_tables.h
 endif
-
-clean::
-	$(RM) $(CLEANSUFFIXES:%=libavcodec/vulkan/%)
-
-VULKAN = $(subst $(SRC_PATH)/,,$(wildcard $(SRC_PATH)/libavcodec/vulkan/*.comp))
-.SECONDARY: $(VULKAN:.comp=.c)
-libavcodec/vulkan/%.c: TAG = VULKAN
-libavcodec/vulkan/%.c: $(SRC_PATH)/libavcodec/vulkan/%.comp
-	$(M)$(SRC_PATH)/tools/source2c $< $@

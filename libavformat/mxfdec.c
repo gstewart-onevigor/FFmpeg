@@ -1617,6 +1617,7 @@ static const MXFCodecUL mxf_picture_essence_container_uls[] = {
     { { 0x06,0x0e,0x2b,0x34,0x04,0x01,0x01,0x07,0x0d,0x01,0x03,0x01,0x02,0x0c,0x01,0x00 }, 14,   AV_CODEC_ID_JPEG2000, NULL, 14, J2KWrap },
     { { 0x06,0x0e,0x2b,0x34,0x04,0x01,0x01,0x02,0x0d,0x01,0x03,0x01,0x02,0x10,0x60,0x01 }, 14,       AV_CODEC_ID_H264, NULL, 15 }, /* H.264 */
     { { 0x06,0x0e,0x2b,0x34,0x04,0x01,0x01,0x02,0x0d,0x01,0x03,0x01,0x02,0x11,0x01,0x00 }, 14,      AV_CODEC_ID_DNXHD, NULL, 14 }, /* VC-3 */
+    { { 0x06,0x0e,0x2b,0x34,0x04,0x01,0x01,0x0d,0x0d,0x01,0x03,0x01,0x02,0x1e,0x01,0x00 }, 14,      AV_CODEC_ID_DNXUC, NULL, 14 }, /* DNxUncompressed / SMPTE RDD 50 */
     { { 0x06,0x0e,0x2b,0x34,0x04,0x01,0x01,0x02,0x0d,0x01,0x03,0x01,0x02,0x12,0x01,0x00 }, 14,        AV_CODEC_ID_VC1, NULL, 14 }, /* VC-1 */
     { { 0x06,0x0e,0x2b,0x34,0x04,0x01,0x01,0x02,0x0d,0x01,0x03,0x01,0x02,0x14,0x01,0x00 }, 14,       AV_CODEC_ID_TIFF, NULL, 14 }, /* TIFF */
     { { 0x06,0x0e,0x2b,0x34,0x04,0x01,0x01,0x02,0x0d,0x01,0x03,0x01,0x02,0x15,0x01,0x00 }, 14,      AV_CODEC_ID_DIRAC, NULL, 14 }, /* VC-2 */
@@ -1906,7 +1907,7 @@ static int64_t mxf_essence_container_end(MXFContext *mxf, int body_sid)
 /* EditUnit -> absolute offset */
 static int mxf_edit_unit_absolute_offset(MXFContext *mxf, MXFIndexTable *index_table, int64_t edit_unit, AVRational edit_rate, int64_t *edit_unit_out, int64_t *offset_out, MXFPartition **partition_out, int nag)
 {
-    int i = 0;
+    int i = 0, dir = 0;
     int64_t index_duration, index_end;
     MXFIndexTableSegment *first_segment, *last_segment;
 
@@ -1938,7 +1939,7 @@ static int mxf_edit_unit_absolute_offset(MXFContext *mxf, MXFIndexTable *index_t
         i = FFMAX(0, FFMIN(index_table->nb_segments - 1, i64));
     }
 
-    for (; i >= 0 && i < index_table->nb_segments;) {
+    for (; i >= 0 && i < index_table->nb_segments; i += dir) {
         MXFIndexTableSegment *s = index_table->segments[i];
 
         if (s->index_start_position <= edit_unit && edit_unit < s->index_start_position + s->index_duration) {
@@ -1968,12 +1969,14 @@ static int mxf_edit_unit_absolute_offset(MXFContext *mxf, MXFIndexTable *index_t
                 *edit_unit_out = av_rescale_q(edit_unit, edit_rate, s->index_edit_rate);
 
             return mxf_absolute_bodysid_offset(mxf, index_table->body_sid, offset_temp, offset_out, partition_out);
-        } else if (edit_unit < s->index_start_position) {
-            // the segments are sorted by IndexStartPosition, so this is guaranteed to terminate
-            i--;
-        } else {
-            // edit_unit >= s->index_start_position + s->index_duration
-            i++;
+        } else if (dir == 0) {
+            // scan backwards if the segment is earlier than the current IndexStartPosition
+            // else scan forwards
+            if (edit_unit < s->index_start_position) {
+                dir = -1;
+            } else {
+                dir = 1;
+            }
         }
     }
 

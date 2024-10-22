@@ -646,7 +646,7 @@ int ff_vk_exec_add_dep_bool_sem(FFVulkanContext *s, FFVkExecContext *e,
         return 0;
     }
 
-    buf_size = sizeof(int) + sizeof(VkSemaphore)*nb;
+    buf_size = sizeof(*ts) + sizeof(VkSemaphore)*nb;
     ts = av_mallocz(buf_size);
     if (!ts) {
         err = AVERROR(ENOMEM);
@@ -962,6 +962,10 @@ int ff_vk_create_buf(FFVulkanContext *s, FFVkBuffer *buf, size_t size,
         .pNext = &ded_req,
     };
 
+    av_log(s, AV_LOG_DEBUG, "Creating a buffer of %"SIZE_SPECIFIER" bytes, "
+                            "usage: 0x%x, flags: 0x%x\n",
+           size, usage, flags);
+
     ret = vk->CreateBuffer(s->hwctx->act_dev, &buf_spawn, s->hwctx->alloc, &buf->buf);
     if (ret != VK_SUCCESS) {
         av_log(s, AV_LOG_ERROR, "Failed to create buffer: %s\n",
@@ -1064,7 +1068,7 @@ int ff_vk_map_buffers(FFVulkanContext *s, FFVkBuffer **buf, uint8_t *mem[],
                    ff_vk_ret2str(ret));
             return AVERROR_EXTERNAL;
         }
-        mem[i] = dst;
+        mem[i] = buf[i]->mapped_mem = dst;
     }
 
     if (!invalidate)
@@ -1126,8 +1130,10 @@ int ff_vk_unmap_buffers(FFVulkanContext *s, FFVkBuffer **buf, int nb_buffers,
         }
     }
 
-    for (int i = 0; i < nb_buffers; i++)
+    for (int i = 0; i < nb_buffers; i++) {
         vk->UnmapMemory(s->hwctx->act_dev, buf[i]->mem);
+        buf[i]->mapped_mem = NULL;
+    }
 
     return err;
 }
@@ -1197,9 +1203,6 @@ int ff_vk_get_pooled_buffer(FFVulkanContext *ctx, AVBufferPool **buf_pool,
 
     ff_vk_free_buf(ctx, data);
     memset(data, 0, sizeof(*data));
-
-    av_log(ctx, AV_LOG_DEBUG, "Allocating buffer of %"SIZE_SPECIFIER" bytes for pool %p\n",
-           size, *buf_pool);
 
     err = ff_vk_create_buf(ctx, data, size,
                            create_pNext, NULL, usage,
@@ -1281,16 +1284,161 @@ int ff_vk_mt_is_np_rgb(enum AVPixelFormat pix_fmt)
         pix_fmt == AV_PIX_FMT_RGBA64 || pix_fmt == AV_PIX_FMT_RGB565 ||
         pix_fmt == AV_PIX_FMT_BGR565 || pix_fmt == AV_PIX_FMT_BGR0   ||
         pix_fmt == AV_PIX_FMT_0BGR   || pix_fmt == AV_PIX_FMT_RGB0   ||
-        pix_fmt == AV_PIX_FMT_X2RGB10 || pix_fmt == AV_PIX_FMT_X2BGR10)
+        pix_fmt == AV_PIX_FMT_X2RGB10 || pix_fmt == AV_PIX_FMT_X2BGR10 ||
+        pix_fmt == AV_PIX_FMT_RGBAF32 || pix_fmt == AV_PIX_FMT_RGBF32 ||
+        pix_fmt == AV_PIX_FMT_RGBA128 || pix_fmt == AV_PIX_FMT_RGB96)
         return 1;
     return 0;
 }
 
-const char *ff_vk_shader_rep_fmt(enum AVPixelFormat pixfmt)
+const char *ff_vk_shader_rep_fmt(enum AVPixelFormat pix_fmt,
+                                 enum FFVkShaderRepFormat rep_fmt)
 {
-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(pixfmt);
-    const int high = desc->comp[0].depth > 8;
-    return high ? "rgba16f" : "rgba8";
+    switch (pix_fmt) {
+    case AV_PIX_FMT_RGBA:
+    case AV_PIX_FMT_BGRA:
+    case AV_PIX_FMT_RGB24:
+    case AV_PIX_FMT_BGR24:
+    case AV_PIX_FMT_BGR0:
+    case AV_PIX_FMT_RGB0:
+    case AV_PIX_FMT_RGB565:
+    case AV_PIX_FMT_BGR565:
+    case AV_PIX_FMT_YUYV422:
+    case AV_PIX_FMT_UYVY422: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "rgba8ui",
+            [FF_VK_REP_FLOAT] = "rgba8",
+            [FF_VK_REP_INT] = "rgba8i",
+            [FF_VK_REP_UINT] = "rgba8ui",
+        };
+        return rep_tab[rep_fmt];
+    }
+    case AV_PIX_FMT_X2RGB10:
+    case AV_PIX_FMT_X2BGR10:
+    case AV_PIX_FMT_Y210:
+    case AV_PIX_FMT_XV30: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "rgb10_a2ui",
+            [FF_VK_REP_FLOAT] = "rgb10_a2",
+            [FF_VK_REP_INT] = NULL,
+            [FF_VK_REP_UINT] = "rgb10_a2ui",
+        };
+        return rep_tab[rep_fmt];
+    }
+    case AV_PIX_FMT_RGB48:
+    case AV_PIX_FMT_RGBA64:
+    case AV_PIX_FMT_Y212:
+    case AV_PIX_FMT_XV36: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "rgba16ui",
+            [FF_VK_REP_FLOAT] = "rgba16",
+            [FF_VK_REP_INT] = "rgba16i",
+            [FF_VK_REP_UINT] = "rgba16ui",
+        };
+        return rep_tab[rep_fmt];
+    }
+    case AV_PIX_FMT_RGBF32:
+    case AV_PIX_FMT_RGBAF32: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "rgba32f",
+            [FF_VK_REP_FLOAT] = "rgba32f",
+            [FF_VK_REP_INT] = "rgba32i",
+            [FF_VK_REP_UINT] = "rgba32ui",
+        };
+        return rep_tab[rep_fmt];
+    }
+    case AV_PIX_FMT_RGB96:
+    case AV_PIX_FMT_RGBA128: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "rgba32ui",
+            [FF_VK_REP_FLOAT] = NULL,
+            [FF_VK_REP_INT] = "rgba32i",
+            [FF_VK_REP_UINT] = "rgba32ui",
+        };
+        return rep_tab[rep_fmt];
+    }
+    case AV_PIX_FMT_GRAY8:
+    case AV_PIX_FMT_GBRAP:
+    case AV_PIX_FMT_YUV420P:
+    case AV_PIX_FMT_YUV422P:
+    case AV_PIX_FMT_YUV444P: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "r8ui",
+            [FF_VK_REP_FLOAT] = "r8",
+            [FF_VK_REP_INT] = "r8i",
+            [FF_VK_REP_UINT] = "r8ui",
+        };
+        return rep_tab[rep_fmt];
+    };
+    case AV_PIX_FMT_GRAY16:
+    case AV_PIX_FMT_GBRAP16:
+    case AV_PIX_FMT_YUV420P10:
+    case AV_PIX_FMT_YUV420P12:
+    case AV_PIX_FMT_YUV420P16:
+    case AV_PIX_FMT_YUV422P10:
+    case AV_PIX_FMT_YUV422P12:
+    case AV_PIX_FMT_YUV422P16:
+    case AV_PIX_FMT_YUV444P10:
+    case AV_PIX_FMT_YUV444P12:
+    case AV_PIX_FMT_YUV444P16: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "r16ui",
+            [FF_VK_REP_FLOAT] = "r16f",
+            [FF_VK_REP_INT] = "r16i",
+            [FF_VK_REP_UINT] = "r16ui",
+        };
+        return rep_tab[rep_fmt];
+    };
+    case AV_PIX_FMT_GRAYF32:
+    case AV_PIX_FMT_GBRPF32:
+    case AV_PIX_FMT_GBRAPF32: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "r32f",
+            [FF_VK_REP_FLOAT] = "r32f",
+            [FF_VK_REP_INT] = "r32i",
+            [FF_VK_REP_UINT] = "r32ui",
+        };
+        return rep_tab[rep_fmt];
+    };
+    case AV_PIX_FMT_NV12:
+    case AV_PIX_FMT_NV16:
+    case AV_PIX_FMT_NV24: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "rg8ui",
+            [FF_VK_REP_FLOAT] = "rg8",
+            [FF_VK_REP_INT] = "rg8i",
+            [FF_VK_REP_UINT] = "rg8ui",
+        };
+        return rep_tab[rep_fmt];
+    };
+    case AV_PIX_FMT_P010:
+    case AV_PIX_FMT_P210:
+    case AV_PIX_FMT_P410: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "rgb10_a2ui",
+            [FF_VK_REP_FLOAT] = "rgb10_a2",
+            [FF_VK_REP_INT] = NULL,
+            [FF_VK_REP_UINT] = "rgb10_a2ui",
+        };
+        return rep_tab[rep_fmt];
+    };
+    case AV_PIX_FMT_P012:
+    case AV_PIX_FMT_P016:
+    case AV_PIX_FMT_P212:
+    case AV_PIX_FMT_P216:
+    case AV_PIX_FMT_P412:
+    case AV_PIX_FMT_P416: {
+        const char *rep_tab[] = {
+            [FF_VK_REP_NATIVE] = "rg16ui",
+            [FF_VK_REP_FLOAT] = "rg16",
+            [FF_VK_REP_INT] = "rg16i",
+            [FF_VK_REP_UINT] = "rg16ui",
+        };
+        return rep_tab[rep_fmt];
+    };
+    default:
+        return "rgba32f";
+    }
 }
 
 typedef struct ImageViewCtx {
@@ -1310,22 +1458,111 @@ static void destroy_imageviews(void *opaque, uint8_t *data)
     av_free(iv);
 }
 
+static VkFormat map_fmt_to_rep(VkFormat fmt, enum FFVkShaderRepFormat rep_fmt)
+{
+#define REPS_FMT(fmt) \
+    [FF_VK_REP_NATIVE] = fmt ## _UINT, \
+    [FF_VK_REP_FLOAT]  = fmt ## _UNORM, \
+    [FF_VK_REP_INT]    = fmt ## _SINT, \
+    [FF_VK_REP_UINT]   = fmt ## _UINT,
+
+#define REPS_FMT_PACK(fmt, num) \
+    [FF_VK_REP_NATIVE] = fmt ## _UINT_PACK ## num, \
+    [FF_VK_REP_FLOAT]  = fmt ## _UNORM_PACK ## num, \
+    [FF_VK_REP_INT]    = fmt ## _SINT_PACK ## num, \
+    [FF_VK_REP_UINT]   = fmt ## _UINT_PACK ## num,
+
+    const VkFormat fmts_map[][4] = {
+        { REPS_FMT_PACK(VK_FORMAT_A2B10G10R10, 32) },
+        { REPS_FMT_PACK(VK_FORMAT_A2R10G10B10, 32) },
+        {
+            VK_FORMAT_B5G6R5_UNORM_PACK16,
+            VK_FORMAT_B5G6R5_UNORM_PACK16,
+            VK_FORMAT_UNDEFINED,
+            VK_FORMAT_UNDEFINED,
+        },
+        {
+            VK_FORMAT_R5G6B5_UNORM_PACK16,
+            VK_FORMAT_R5G6B5_UNORM_PACK16,
+            VK_FORMAT_UNDEFINED,
+            VK_FORMAT_UNDEFINED,
+        },
+        { REPS_FMT(VK_FORMAT_B8G8R8) },
+        { REPS_FMT(VK_FORMAT_B8G8R8A8) },
+        { REPS_FMT(VK_FORMAT_R8) },
+        { REPS_FMT(VK_FORMAT_R8G8) },
+        { REPS_FMT(VK_FORMAT_R8G8B8) },
+        { REPS_FMT(VK_FORMAT_R8G8B8A8) },
+        { REPS_FMT(VK_FORMAT_R16) },
+        { REPS_FMT(VK_FORMAT_R16G16) },
+        { REPS_FMT(VK_FORMAT_R16G16B16) },
+        { REPS_FMT(VK_FORMAT_R16G16B16A16) },
+        {
+            VK_FORMAT_R32_SFLOAT,
+            VK_FORMAT_R32_SFLOAT,
+            VK_FORMAT_UNDEFINED,
+            VK_FORMAT_UNDEFINED,
+        },
+        {
+            VK_FORMAT_R32G32B32_SFLOAT,
+            VK_FORMAT_R32G32B32_SFLOAT,
+            VK_FORMAT_UNDEFINED,
+            VK_FORMAT_UNDEFINED,
+        },
+        {
+            VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_FORMAT_UNDEFINED,
+            VK_FORMAT_UNDEFINED,
+        },
+        {
+            VK_FORMAT_R32G32B32_UINT,
+            VK_FORMAT_UNDEFINED,
+            VK_FORMAT_R32G32B32_SINT,
+            VK_FORMAT_R32G32B32_UINT,
+        },
+        {
+            VK_FORMAT_R32G32B32A32_UINT,
+            VK_FORMAT_UNDEFINED,
+            VK_FORMAT_R32G32B32A32_SINT,
+            VK_FORMAT_R32G32B32A32_UINT,
+        },
+    };
+#undef REPS_FMT_PACK
+#undef REPS_FMT
+
+    if (fmt == VK_FORMAT_UNDEFINED)
+        return VK_FORMAT_UNDEFINED;
+
+    for (int i = 0; i < FF_ARRAY_ELEMS(fmts_map); i++) {
+        if (fmts_map[i][FF_VK_REP_NATIVE] == fmt ||
+            fmts_map[i][FF_VK_REP_FLOAT] == fmt ||
+            fmts_map[i][FF_VK_REP_INT] == fmt ||
+            fmts_map[i][FF_VK_REP_UINT] == fmt)
+            return fmts_map[i][rep_fmt];
+    }
+
+    return VK_FORMAT_UNDEFINED;
+}
+
 int ff_vk_create_imageviews(FFVulkanContext *s, FFVkExecContext *e,
                             VkImageView views[AV_NUM_DATA_POINTERS],
-                            AVFrame *f)
+                            AVFrame *f, enum FFVkShaderRepFormat rep_fmt)
 {
     int err;
     VkResult ret;
     AVBufferRef *buf;
     FFVulkanFunctions *vk = &s->vkfn;
     AVHWFramesContext *hwfc = (AVHWFramesContext *)f->hw_frames_ctx->data;
+    AVVulkanFramesContext *vkfc = hwfc->hwctx;
     const VkFormat *rep_fmts = av_vkfmt_from_pixfmt(hwfc->sw_format);
     AVVkFrame *vkf = (AVVkFrame *)f->data[0];
     const int nb_images = ff_vk_count_images(vkf);
     const int nb_planes = av_pix_fmt_count_planes(hwfc->sw_format);
 
-    const size_t buf_size = sizeof(int) + nb_planes*sizeof(VkImageView);
-    ImageViewCtx *iv = av_mallocz(buf_size);
+    ImageViewCtx *iv;
+    const size_t buf_size = sizeof(*iv) + nb_planes*sizeof(VkImageView);
+    iv = av_mallocz(buf_size);
     if (!iv)
         return AVERROR(ENOMEM);
 
@@ -1335,12 +1572,18 @@ int ff_vk_create_imageviews(FFVulkanContext *s, FFVkExecContext *e,
                                               VK_IMAGE_ASPECT_PLANE_1_BIT,
                                               VK_IMAGE_ASPECT_PLANE_2_BIT, };
 
+        VkImageViewUsageCreateInfo view_usage_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+            .usage = vkfc->usage &
+                     (~(VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR |
+                        VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR)),
+        };
         VkImageViewCreateInfo view_create_info = {
             .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .pNext      = NULL,
+            .pNext      = &view_usage_info,
             .image      = vkf->img[FFMIN(i, nb_images - 1)],
             .viewType   = VK_IMAGE_VIEW_TYPE_2D,
-            .format     = rep_fmts[i],
+            .format     = map_fmt_to_rep(rep_fmts[i], rep_fmt),
             .components = ff_comp_identity_map,
             .subresourceRange = {
                 .aspectMask = plane_aspect[(nb_planes != nb_images) +
@@ -1349,6 +1592,13 @@ int ff_vk_create_imageviews(FFVulkanContext *s, FFVkExecContext *e,
                 .layerCount = 1,
             },
         };
+        if (view_create_info.format == VK_FORMAT_UNDEFINED) {
+            av_log(s, AV_LOG_ERROR, "Unable to find a compatible representation "
+                                    "of format %i and mode %i\n",
+                   rep_fmts[i], rep_fmt);
+            err = AVERROR(EINVAL);
+            goto fail;
+        }
 
         ret = vk->CreateImageView(s->hwctx->act_dev, &view_create_info,
                                   s->hwctx->alloc, &iv->views[i]);
@@ -1482,8 +1732,10 @@ int ff_vk_shader_init(FFVulkanContext *s, FFVulkanShader *shd, const char *name,
     GLSLC(0, #extension GL_EXT_shader_explicit_arithmetic_types : require     );
     GLSLC(0, #extension GL_EXT_control_flow_attributes : require              );
     if ((s->extensions & FF_VK_EXT_DEBUG_UTILS) &&
-        (s->extensions & FF_VK_EXT_RELAXED_EXTENDED_INSTR))
+        (s->extensions & FF_VK_EXT_RELAXED_EXTENDED_INSTR)) {
         GLSLC(0, #extension GL_EXT_debug_printf : require                     );
+        GLSLC(0, #define DEBUG                                                );
+    }
 
     if (stage == VK_SHADER_STAGE_TASK_BIT_EXT ||
         stage == VK_SHADER_STAGE_MESH_BIT_EXT)
@@ -1880,8 +2132,21 @@ print:
         if (prop->mem_quali && desc[i].mem_quali)
             GLSLA(" %s", desc[i].mem_quali);
 
-        if (prop->type)
-            GLSLA(" %s", prop->type);
+        if (prop->type) {
+            GLSLA(" ");
+            if (desc[i].type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+                if (desc[i].mem_layout) {
+                    int len = strlen(desc[i].mem_layout);
+                    if (desc[i].mem_layout[len - 1] == 'i' &&
+                        desc[i].mem_layout[len - 2] == 'u') {
+                        GLSLA("u");
+                    } else if (desc[i].mem_layout[len - 1] == 'i') {
+                        GLSLA("i");
+                    }
+                }
+            }
+            GLSLA("%s", prop->type);
+        }
 
         if (prop->dim_needed)
             GLSLA("%iD", desc[i].dimensions);

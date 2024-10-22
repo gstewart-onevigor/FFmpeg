@@ -454,7 +454,7 @@ static av_cold int init_denoise_pipeline(FFVulkanContext *vkctx, FFVkExecPool *e
         {
             .name        = "output_img",
             .type        = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .mem_layout  = ff_vk_shader_rep_fmt(vkctx->output_format),
+            .mem_layout  = ff_vk_shader_rep_fmt(vkctx->output_format, FF_VK_REP_FLOAT),
             .mem_quali   = "writeonly",
             .dimensions  = 2,
             .elems       = planes,
@@ -854,7 +854,7 @@ static int nlmeans_vulkan_filter_frame(AVFilterLink *link, AVFrame *in)
     ws_buf = NULL;
 
     /* Input frame prep */
-    RET(ff_vk_create_imageviews(vkctx, exec, in_views, in));
+    RET(ff_vk_create_imageviews(vkctx, exec, in_views, in, FF_VK_REP_FLOAT));
     ff_vk_frame_barrier(vkctx, exec, in, img_bar, &nb_img_bar,
                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -863,7 +863,7 @@ static int nlmeans_vulkan_filter_frame(AVFilterLink *link, AVFrame *in)
                         VK_QUEUE_FAMILY_IGNORED);
 
     /* Output frame prep */
-    RET(ff_vk_create_imageviews(vkctx, exec, out_views, out));
+    RET(ff_vk_create_imageviews(vkctx, exec, out_views, out, FF_VK_REP_FLOAT));
     ff_vk_frame_barrier(vkctx, exec, out, img_bar, &nb_img_bar,
                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
