@@ -27,10 +27,10 @@
 #include "compat/w32dlfcn.h"
 #else
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 #include "thread.h"
-#include <unistd.h>
 
 #include "config.h"
 #include "pixdesc.h"
@@ -298,8 +298,12 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
 
     for (int i = 0; i < nb_vk_formats_list; i++) {
         if (vk_formats_list[i].pixfmt == p) {
+            VkFormatProperties3 fprops = {
+                .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
+            };
             VkFormatProperties2 prop = {
                 .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+                .pNext = &fprops,
             };
             VkFormatFeatureFlagBits2 feats_primary, feats_secondary;
             int basics_primary = 0, basics_secondary = 0;
@@ -310,8 +314,7 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
                                                    &prop);
 
             feats_primary = tiling == VK_IMAGE_TILING_LINEAR ?
-                             prop.formatProperties.linearTilingFeatures :
-                             prop.formatProperties.optimalTilingFeatures;
+                             fprops.linearTilingFeatures : fprops.optimalTilingFeatures;
             basics_primary = (feats_primary & basic_flags) == basic_flags;
             storage_primary = !!(feats_primary & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT);
 
@@ -320,8 +323,7 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
                                                        vk_formats_list[i].fallback[0],
                                                        &prop);
                 feats_secondary = tiling == VK_IMAGE_TILING_LINEAR ?
-                                  prop.formatProperties.linearTilingFeatures :
-                                  prop.formatProperties.optimalTilingFeatures;
+                                  fprops.linearTilingFeatures : fprops.optimalTilingFeatures;
                 basics_secondary = (feats_secondary & basic_flags) == basic_flags;
                 storage_secondary = !!(feats_secondary & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT);
             } else {
@@ -1164,6 +1166,11 @@ static int setup_queue_families(AVHWDeviceContext *ctx, VkDeviceCreateInfo *cd)
     return 0;
 }
 
+/* Only resources created by vulkan_device_create should be released here,
+ * resources created by vulkan_device_init should be released by
+ * vulkan_device_uninit, to make sure we don't free user provided resources,
+ * and there is no leak.
+ */
 static void vulkan_device_free(AVHWDeviceContext *ctx)
 {
     VulkanDevicePriv *p = ctx->internal->priv;
@@ -1183,14 +1190,19 @@ static void vulkan_device_free(AVHWDeviceContext *ctx)
     if (p->libvulkan)
         dlclose(p->libvulkan);
 
+    RELEASE_PROPS(hwctx->enabled_inst_extensions, hwctx->nb_enabled_inst_extensions);
+    RELEASE_PROPS(hwctx->enabled_dev_extensions, hwctx->nb_enabled_dev_extensions);
+}
+
+static void vulkan_device_uninit(AVHWDeviceContext *ctx)
+{
+    VulkanDevicePriv *p = ctx->internal->priv;
+
     for (uint32_t i = 0; i < p->nb_tot_qfs; i++) {
         pthread_mutex_destroy(p->qf_mutex[i]);
         av_freep(&p->qf_mutex[i]);
     }
     av_freep(&p->qf_mutex);
-
-    RELEASE_PROPS(hwctx->enabled_inst_extensions, hwctx->nb_enabled_inst_extensions);
-    RELEASE_PROPS(hwctx->enabled_dev_extensions, hwctx->nb_enabled_dev_extensions);
 
     ff_vk_uninit(&p->vkctx);
 }
@@ -1654,11 +1666,6 @@ static int vulkan_frames_get_constraints(AVHWDeviceContext *ctx,
                                     NULL, NULL, NULL, NULL, 0, 0) >= 0;
     }
 
-#if CONFIG_CUDA
-    if (p->dev_is_nvidia)
-        count++;
-#endif
-
     constraints->valid_sw_formats = av_malloc_array(count + 1,
                                                     sizeof(enum AVPixelFormat));
     if (!constraints->valid_sw_formats)
@@ -1674,10 +1681,6 @@ static int vulkan_frames_get_constraints(AVHWDeviceContext *ctx,
         }
     }
 
-#if CONFIG_CUDA
-    if (p->dev_is_nvidia)
-        constraints->valid_sw_formats[count++] = AV_PIX_FMT_CUDA;
-#endif
     constraints->valid_sw_formats[count++] = AV_PIX_FMT_NONE;
 
     constraints->min_width  = 1;
@@ -2406,12 +2409,22 @@ static int vulkan_transfer_get_formats(AVHWFramesContext *hwfc,
                                        enum AVHWFrameTransferDirection dir,
                                        enum AVPixelFormat **formats)
 {
-    enum AVPixelFormat *fmts = av_malloc_array(2, sizeof(*fmts));
+    enum AVPixelFormat *fmts;
+    int n = 2;
+
+#if CONFIG_CUDA
+    n++;
+#endif
+    fmts = av_malloc_array(n, sizeof(*fmts));
     if (!fmts)
         return AVERROR(ENOMEM);
 
-    fmts[0] = hwfc->sw_format;
-    fmts[1] = AV_PIX_FMT_NONE;
+    n = 0;
+    fmts[n++] = hwfc->sw_format;
+#if CONFIG_CUDA
+    fmts[n++] = AV_PIX_FMT_CUDA;
+#endif
+    fmts[n++] = AV_PIX_FMT_NONE;
 
     *formats = fmts;
     return 0;
@@ -3702,6 +3715,7 @@ const HWContextType ff_hwcontext_type_vulkan = {
     .frames_priv_size       = sizeof(VulkanFramesPriv),
 
     .device_init            = &vulkan_device_init,
+    .device_uninit          = &vulkan_device_uninit,
     .device_create          = &vulkan_device_create,
     .device_derive          = &vulkan_device_derive,
 

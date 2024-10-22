@@ -235,6 +235,16 @@ static int cbs_h265_payload_extension_present(GetBitContext *gbc, uint32_t paylo
 #define FUNC_H266(name) FUNC_NAME1(READWRITE, h266, name)
 #define FUNC_SEI(name)  FUNC_NAME1(READWRITE, sei,  name)
 
+#define SEI_FUNC(name, args) \
+static int FUNC(name) args;  \
+static int FUNC(name ## _internal)(CodedBitstreamContext *ctx, \
+                                   RWContext *rw, void *cur,   \
+                                   SEIMessageState *state)     \
+{ \
+    return FUNC(name)(ctx, rw, cur, state); \
+} \
+static int FUNC(name) args
+
 #define SUBSCRIPTS(subs, ...) (subs > 0 ? ((int[subs + 1]){ subs, __VA_ARGS__ }) : NULL)
 
 #define u(width, name, range_min, range_max) \
@@ -698,7 +708,11 @@ static int cbs_h2645_split_fragment(CodedBitstreamContext *ctx,
 
             start = bytestream2_tell(&gbc);
             for(i = 0; i < num_nalus; i++) {
+                if (bytestream2_get_bytes_left(&gbc) < 2)
+                    return AVERROR_INVALIDDATA;
                 size = bytestream2_get_be16(&gbc);
+                if (bytestream2_get_bytes_left(&gbc) < size)
+                    return AVERROR_INVALIDDATA;
                 bytestream2_skip(&gbc, size);
             }
             end = bytestream2_tell(&gbc);
@@ -1989,7 +2003,17 @@ static const CodedBitstreamUnitTypeDescriptor cbs_h266_unit_types[] = {
     CBS_UNIT_TYPE_INTERNAL_REF(VVC_DCI_NUT, H266RawDCI, extension_data.data),
     CBS_UNIT_TYPE_INTERNAL_REF(VVC_OPI_NUT, H266RawOPI, extension_data.data),
     CBS_UNIT_TYPE_INTERNAL_REF(VVC_VPS_NUT, H266RawVPS, extension_data.data),
-    CBS_UNIT_TYPE_INTERNAL_REF(VVC_SPS_NUT, H266RawSPS, extension_data.data),
+    {
+        .nb_unit_types     = 1,
+        .unit_type.list[0] = VVC_SPS_NUT,
+        .content_type      = CBS_CONTENT_TYPE_INTERNAL_REFS,
+        .content_size      = sizeof(H266RawSPS),
+        .type.ref          = {
+            .nb_offsets = 2,
+            .offsets    = { offsetof(H266RawSPS, extension_data.data),
+                            offsetof(H266RawSPS, vui.extension_data.data) }
+        },
+    },
     CBS_UNIT_TYPE_INTERNAL_REF(VVC_PPS_NUT, H266RawPPS, extension_data.data),
     CBS_UNIT_TYPE_INTERNAL_REF(VVC_PREFIX_APS_NUT, H266RawAPS, extension_data.data),
     CBS_UNIT_TYPE_INTERNAL_REF(VVC_SUFFIX_APS_NUT, H266RawAPS, extension_data.data),
@@ -2058,6 +2082,11 @@ const CodedBitstreamType ff_cbs_type_h266 = {
     .flush             = &cbs_h266_flush,
     .close             = &cbs_h266_close,
 };
+
+// Macro for the read/write pair.
+#define SEI_MESSAGE_RW(codec, name) \
+    .read  = cbs_ ## codec ## _read_  ## name ## _internal, \
+    .write = cbs_ ## codec ## _write_ ## name ## _internal
 
 static const SEIMessageTypeDescriptor cbs_sei_common_types[] = {
     {

@@ -372,7 +372,7 @@ static void export_stream_params(HEVCContext *s, const HEVCSPS *sps)
         den = sps->vui.vui_time_scale;
     }
 
-    if (num != 0 && den != 0)
+    if (num > 0 && den > 0)
         av_reduce(&avctx->framerate.den, &avctx->framerate.num,
                   num, den, 1 << 30);
 }
@@ -651,6 +651,10 @@ static int hls_slice_header(HEVCContext *s)
 
         if (s->ps.pps->dependent_slice_segments_enabled_flag)
             sh->dependent_slice_segment_flag = get_bits1(gb);
+        if (sh->dependent_slice_segment_flag && !s->slice_initialized) {
+            av_log(s->avctx, AV_LOG_ERROR, "Independent slice segment missing.\n");
+            return AVERROR_INVALIDDATA;
+        }
 
         slice_address_length = av_ceil_log2(s->ps.sps->ctb_width *
                                             s->ps.sps->ctb_height);
@@ -939,9 +943,6 @@ static int hls_slice_header(HEVCContext *s)
         } else {
             sh->slice_loop_filter_across_slices_enabled_flag = s->ps.pps->seq_loop_filter_across_slices_enabled_flag;
         }
-    } else if (!s->slice_initialized) {
-        av_log(s->avctx, AV_LOG_ERROR, "Independent slice segment missing.\n");
-        return AVERROR_INVALIDDATA;
     }
 
     sh->num_entry_point_offsets = 0;
@@ -1961,13 +1962,13 @@ static void hls_prediction_unit(HEVCLocalContext *lc, int x0, int y0,
 
     if (current_mv.pred_flag & PF_L0) {
         ref0 = refPicList[0].ref[current_mv.ref_idx[0]];
-        if (!ref0 || !ref0->frame->data[0])
+        if (!ref0 || !ref0->frame)
             return;
         hevc_await_progress(s, ref0, &current_mv.mv[0], y0, nPbH);
     }
     if (current_mv.pred_flag & PF_L1) {
         ref1 = refPicList[1].ref[current_mv.ref_idx[1]];
-        if (!ref1 || !ref1->frame->data[0])
+        if (!ref1 || !ref1->frame)
             return;
         hevc_await_progress(s, ref1, &current_mv.mv[1], y0, nPbH);
     }
@@ -2627,6 +2628,11 @@ static int hls_decode_entry_wpp(AVCodecContext *avctxt, void *hevc_lclist,
         if (ret < 0)
             goto error;
         hls_sao_param(lc, x_ctb >> s->ps.sps->log2_ctb_size, y_ctb >> s->ps.sps->log2_ctb_size);
+
+        s->deblock[ctb_addr_rs].beta_offset = s->sh.beta_offset;
+        s->deblock[ctb_addr_rs].tc_offset   = s->sh.tc_offset;
+        s->filter_slice_edges[ctb_addr_rs]  = s->sh.slice_loop_filter_across_slices_enabled_flag;
+
         more_data = hls_coding_quadtree(lc, x_ctb, y_ctb, s->ps.sps->log2_ctb_size, 0);
 
         if (more_data < 0) {
@@ -2920,7 +2926,7 @@ static int hevc_frame_start(HEVCContext *s)
 fail:
     if (s->ref)
         ff_hevc_unref_frame(s->ref, ~0);
-    s->ref = NULL;
+    s->ref = s->collocated_ref = NULL;
     return ret;
 }
 
@@ -3015,8 +3021,11 @@ static int decode_nal_unit(HEVCContext *s, const H2645NAL *nal)
     case HEVC_NAL_RASL_N:
     case HEVC_NAL_RASL_R:
         ret = hls_slice_header(s);
-        if (ret < 0)
+        if (ret < 0) {
+            // hls_slice_header() does not cleanup on failure thus the state now is inconsistant so we cannot use it on depandant slices
+            s->slice_initialized = 0;
             return ret;
+        }
         if (ret == 1) {
             ret = AVERROR_INVALIDDATA;
             goto fail;
@@ -3136,7 +3145,7 @@ static int decode_nal_units(HEVCContext *s, const uint8_t *buf, int length)
     int i, ret = 0;
     int eos_at_start = 1;
 
-    s->ref = NULL;
+    s->ref = s->collocated_ref = NULL;
     s->last_eos = s->eos;
     s->eos = 0;
     s->overlap = 0;
@@ -3351,7 +3360,7 @@ static int hevc_decode_frame(AVCodecContext *avctx, AVFrame *rframe,
                    old, s->dovi_ctx.dv_profile);
     }
 
-    s->ref = NULL;
+    s->ref = s->collocated_ref = NULL;
     ret    = decode_nal_units(s, avpkt->data, avpkt->size);
     if (ret < 0)
         return ret;
